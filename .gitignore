@@ -1,0 +1,12 @@
+# Obsidian 本地运行时文件（因机器而异，不入库）
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.obsidian/plugins/*/data.json
+
+# 附件里的临时文件
+Attachments/.DS_Store
+
+# 系统文件
+.DS_Store
+Thumbs.db

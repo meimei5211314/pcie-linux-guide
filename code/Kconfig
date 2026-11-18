@@ -1,0 +1,18 @@
+# PCI 驱动骨架的 Kconfig（放进内核树编译时用）
+#
+# 用法：把本目录放到 drivers/misc/pci_skel/，并在 drivers/misc/Kconfig 加：
+#       source "drivers/misc/pci_skel/Kconfig"
+#   在 drivers/misc/Makefile 加：
+#       obj-$(CONFIG_PCI_SKEL) += pci_skel/
+#
+# 然后 make menuconfig 里就能搜到 "PCI skeleton driver (teaching)"。
+
+config PCI_SKEL
+	tristate "PCI skeleton driver (teaching)"
+	depends on PCI && PCI_MSI
+	help
+	  Minimal, compilable Linux PCIe driver skeleton for learning.
+	  Demonstrates the four pillars: probe/config, BAR mapping,
+	  DMA data path, and MSI-X interrupt handling.
+
+	  If unsure, say N. Build as module (M) for development.
