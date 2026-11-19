@@ -93,8 +93,18 @@ ib_write_bw -d mlx5_0 -x 3
 
 # 机器 B（client）
 ib_write_bw -d mlx5_0 -x 3 <A机IP>
-# 输出带宽，接近线速（如 100Gb IB ≈ 95 GB/s 实测）
 ```
+
+**如何读结果（单位是最容易错的地方）**：perftest 输出的是 **MB/s**，不是 Gb/s，也不是"线速的百分比"。
+
+| IB 速率 | 线速 | 理论单向（÷8） | 实测单向（参考） |
+|---------|------|---------------|-----------------|
+| EDR（100G） | 100 Gb/s | 12.5 GB/s | ≈11–11.8 GB/s（约 11,000–11,800 MB/s） |
+| HDR（200G） | 200 Gb/s | 25 GB/s | ≈22–24 GB/s |
+| NDR（400G） | 400 Gb/s | 50 GB/s | ≈45–48 GB/s |
+
+> ⚠️ 常见误算：把 100 Gb/s 直接读成 "100 GB/s"（差 8 倍），再套上编码开销后误报成 "95 GB/s"。正确量级是 **11–12 GB/s 单向**。多端口/多网卡聚合才可能达到数十 GB/s。
+> 编码与换算细节见 [[17_带宽与单位换算速查]]。
 
 ---
 
@@ -102,17 +112,49 @@ ib_write_bw -d mlx5_0 -x 3 <A机IP>
 
 ### 前提
 1. GPU 驱动 + CUDA 安装好
-2. IB 网卡驱动（mlx5 等）
-3. **GPUDirect RDMA 内核模块**（`nvidia-peermem` 或 `nv_peer_mem`）
+2. IB 网卡驱动（mlx5 等），且 HCA 支持 ODP（ConnectX-6/7 起）
+3. GPU 显存能被网卡 DMA —— **这一条有新旧两条技术路线，不能混为一谈**
+
+### 路线一：peer-memory（旧，OFED 专有）
 
 ```bash
-# 检查 peer memory 模块
-lsmod | grep -i "peer"
-# 应看到 nvidia_peermem 或 nv_peer_mem
-
-# 如果没有，加载
-sudo modprobe nvidia_peermem
+lsmod | grep -iE "peermem|peer_mem"     # 旧：nv_peer_mem；新：nvidia_peermem
+sudo modprobe nvidia-peermem            # 注意：modprobe 用连字符，模块名是下划线
 ```
+
+> ⚠️ **关键事实**：`nvidia-peermem` 依赖的 `ib_register_peer_memory_client()` **从来不在 Linux 主线内核里**，只在 **MLNX_OFED** 构建的 `ib_core` 中存在。所以在 Ubuntu/RHEL 自带（inbox）的 rdma-core 上，`modprobe nvidia-peermem` 会报 `Invalid argument (-EINVAL)`——这不是配置错，而是**该符号不存在**。NVIDIA 已把这条路线标记为 legacy。
+
+### 路线二：DMA-BUF（新，主线内核）
+
+机制是：GPU 驱动把显存导出为 dma-buf fd，网卡通过 `ibv_reg_dmabuf_mr()` 直接注册。NCCL 对应开关是 `NCCL_DMABUF_ENABLE=1`。
+
+**要把"内核有能力"和"生态默认走这条"分开看**——这是最容易被二手资料讲混的一点：
+
+| 层次 | 时间 | 判据 |
+|------|------|------|
+| 内核具备（RDMA 接受 dma-buf） | **v5.12** 起 | `include/rdma/ib_umem.h` 里有 `ib_umem_dmabuf_get()` |
+| 用户态具备 | rdma-core 提供 `ibv_reg_dmabuf_mr()` | `grep ibv_reg_dmabuf_mr /usr/include/infiniband/verbs.h` |
+| 生态默认走这条路 | 约内核 6.8 时期起，NCCL 逐步默认 | 「6.8 起」说的是这个，**不是接口引入时间** |
+
+> 所以"6.8 之前没有 DMA-BUF"是不准确的：5.12 的内核就能用，只是那时 GPU 侧 exporter 与框架默认路径都不成熟。做兼容性判断请看**头文件里有没有符号**，不要背年份。完整版本矩阵见 [[18_内核版本适配矩阵]]。
+
+```bash
+# 1. nvidia-drm 必须开 modeset，否则 dma-buf 导出不生效（最常见的坑）
+cat /sys/module/nvidia_drm/parameters/modeset     # 必须是 Y
+sudo modprobe nvidia_drm modeset=1
+
+# 2. 内核配置需具备
+#    CONFIG_DMA_SHARED_BUFFER=y  CONFIG_HMM_MIRROR=y  CONFIG_INFINIBAND_ON_DEMAND_PAGING=y
+zgrep -E "CONFIG_(DMA_SHARED_BUFFER|HMM_MIRROR|INFINIBAND_ON_DEMAND_PAGING)=" /proc/config.gz 2>/dev/null \
+  || grep -E "CONFIG_(DMA_SHARED_BUFFER|HMM_MIRROR|INFINIBAND_ON_DEMAND_PAGING)=" /boot/config-$(uname -r)
+
+# 3. 让 NCCL 走 dma-buf 而不是 peer-memory
+export NCCL_DMABUF_ENABLE=1
+```
+
+**如何判断到底走了哪条路**：`NCCL_DEBUG=INFO` 的初始化段会打印 GPUDirect RDMA 是否启用；若 `ibv_reg_mr` 返回 `Bad address (EFAULT)`，说明显存没被成功注册，通常就是两条路都没走通。
+
+> 两条路线的实现差异与「自研 GPU/NPU 该选哪条」详见 [[dev_case_03_peer_memory]]。
 
 ### 验证 GPU-direct 带宽
 ```bash
@@ -141,7 +183,7 @@ mpirun -np 8 --hostfile hosts.txt \
 |------|------|------|
 | NCCL 走不了 IB，fallback 到 TCP | IB 没配好 / GID index 错 | `NCCL_DEBUG=INFO` 看 NET/IB；`NCCL_IB_HCA` 指定网卡 |
 | RDMA 带宽远低于线速 | PFC/ECN 没配（RoCE）/ 链路降速 | `ibstat` 查速率；查交换机 PFC |
-| GPUDirect 不生效（走 CPU 中转） | peer_mem 模块没加载 / 内存没对齐 | 加载 `nvidia_peermem`；用 `cudaMalloc` 对齐内存 |
+| GPUDirect 不生效（走 CPU 中转） | 两条路都没走通：旧路线 peer_mem 未加载（且 inbox 栈下无法加载）；新路线 dma-buf 未启用 | 优先走 dma-buf：`nvidia_drm modeset=1` + `NCCL_DMABUF_ENABLE=1`；旧路线仅在 MLNX_OFED 下可用 |
 | NUMA 跨节点降速 | 网卡和 GPU 不在同一 NUMA | `numactl` 绑核；查 `nvidia-smi topo -m` |
 
 ### 看拓扑（决定走 NVLink 还是 PCIe 还是网络）
@@ -159,8 +201,9 @@ nvidia-smi topo -m
 - [ ] 能画出"有/无 GPUDirect"的跨机 GPU 通讯路径
 - [ ] 能区分 GPUDirect P2P / RDMA / Storage
 - [ ] 能用 `ibstat`、`ib_write_bw` 检查 RDMA 环境
-- [ ] 知道 GPUDirect RDMA 需要加载 `nvidia_peermem` 模块
+- [ ] 知道 GPUDirect RDMA 有 **peer-memory（OFED 专有）** 与 **DMA-BUF（主线）** 两代路线，不会在 inbox 栈上死磕 `nvidia-peermem`
 - [ ] 理解 RoCE 需要配 PFC/ECN 才能无损
+- [ ] 能说清 `ib_write_bw` 输出单位是 MB/s，100G IB 单向约 11–12 GB/s
 
 ---
 

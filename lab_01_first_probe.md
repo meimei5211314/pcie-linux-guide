@@ -100,10 +100,12 @@ dmesg | tail           # 预期：pci_skel ...: removed，且无 Oops / BUG / tr
 
 ## 7. 进阶（下一步）
 
-跑通 Lab 01 后，按顺序挑战：
-- **Lab 02（中断）**：恢复 6.6~6.7（MSI-X + request_irq），用一块支持 MSI-X 的网卡，`cat /proc/interrupts | grep pci_skel` 看中断计数变化。
-- **Lab 03（DMA 闭环）**：需要设备真的配合写回 DMA 数据（自定义 FPGA 卡或 QEMU 教学设备）才能验证 `userspace_test` 首字节=0xA5。
+跑通本篇后，按顺序挑战：
+- **加中断**：恢复 probe 的 6.6~6.7（MSI-X + request_irq），用一块支持 MSI-X 的网卡，`cat /proc/interrupts | grep pci_skel` 看中断计数变化。
+- **DMA 闭环**：需要设备真的配合写回 DMA 数据（自定义 FPGA 卡，或自写 QEMU 设备模型）才能验证 `userspace_test` 首字节=0xA5，见 [[lab_02_qemu]] 的"玩法 C"。
+- **QEMU 模拟**：完全没硬件就去做 [[lab_02_qemu]]；要可复现环境做 [[lab_03_qemu_docker]]。
 - **用户态 mmap**：用骨架的 `.mmap`，写个小程序 `mmap` BAR0 后直接 `*(volatile uint32_t*)0x...` 读 REG_ID，对比 `read()` 系统调用路径的开销（`perf stat` 量）。
+- **用户态驱动（最安全）**：走 VFIO 路线，不写内核模块、不怕 panic，见 [[lab_04_vfio_userspace]]。
 
 ---
 

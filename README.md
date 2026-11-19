@@ -25,22 +25,51 @@ pcie-linux-guide/
 ├── 02_Linux_PCIe驱动开发.md
 ├── 03_多卡互联设计.md
 ├── 04_优化与调试.md
-├── 05_面试与原理问答.md
+├── 05_面试与原理问答.md          ← 37 道反向检验题（覆盖全部主题）
 ├── lab_01_first_probe.md      ← 动手实验：无自定义设备也能跑到"读到真硬件"
 ├── lab_02_qemu.md             ← QEMU 模拟实验：完全无硬件跑通 probe/BAR/中断
 ├── lab_03_qemu_docker.md      ← Docker+QEMU：一键可复现的实验环境（含 docker/）
+├── lab_04_vfio_userspace.md   ← VFIO 用户态驱动：不写内核模块、不怕 panic ⭐推荐
 ├── 06_零拷贝专题.md           ← 零拷贝原理/代码/嵌入式/PCIe 实战
+├── 07_多卡通讯总览.md         ← 多卡通讯技术栈子库入口（07-13 完整链路）
+├── 08_集合通信原语.md         ← AllReduce/AllGather/ReduceScatter 五大原语
+├── 09_并行策略与通讯模式.md   ← DP/TP/PP 对应的通讯操作
+├── 10_NCCL实战与调试.md       ← NCCL 用法 + nccl-tests + 排错
+├── 11_GPUDirect与RDMA.md      ← 跨机 GPU 通讯基础（IB/RoCE）
+├── 12_通讯性能优化.md         ← 减量/提带宽/通讯-计算重叠
+├── 13_多卡通讯实战演练.md     ← 从零到实战路径 + L1-L5 分层自测
+├── 14_配置空间与能力链表详解.md ← 4KB 配置空间/BAR 尺寸/MSI-X 表/能力链表
+├── 15_IOMMU_ACS与P2P可行性.md  ← 为什么同一对卡换机器就不能 P2P
+├── 16_AER错误处理与链路稳定性.md ← AER 位定义/日志解读/DPC/复位
+├── 17_带宽与单位换算速查.md    ← 双向 vs 单向、GT/s、busbw，防算错
+├── 18_内核版本适配矩阵.md      ← 同一 API 在不同内核版本的签名差异（写代码前查）
+├── 多卡集群驱动开发技能地图.md ← 多卡集群驱动开发子库入口（五层技能模型）
+├── dev_case_01_拓扑发现.md    ← 开发案例：枚举多卡、判断卡间拓扑
+├── dev_case_02_p2pdma.md      ← 开发案例：同 Switch 卡 DMA 直传（P2PDMA）
+├── dev_case_03_peer_memory.md ← 开发案例：GPU peer memory 模块（跨机 GPUDirect 基础）
+├── dev_case_04_多队列msix.md  ← 开发案例：多队列 MSI-X + 中断亲和
+├── PCIe_图文全景教程.md       ← 图文全景教程：六大场景一图看懂（含架构图/流程图）
+├── 集群高速IO问题排查.md      ← 训练/推理多卡集群高速 IO 典型问题手册
+├── 硬件bring-up清单.md        ← 拿到新卡从插上到跑通的工程化清单
+├── 术语速查表.md              ← 按主题分组的术语速查（查概念"是什么"）
+├── 学习进度追踪.md            ← 勾选式进度表 + 里程碑 + 卡点记录
 ├── troubleshooting.md         ← 环境前置 + 报错对照表（零基础必读）
+├── 核查报告_2026-11-19.md      ← 全库核查记录（P0/P1/P2 清单 + 验证方法，可复现）
 ├── docker/                    ← lab_03 配套：Dockerfile + entrypoint.sh
+├── Templates/                 ← Obsidian 笔记模板
+├── 学习日志/                  ← 每日学习日志（用 Obsidian 每日笔记）
 └── code/
     ├── pci_skeleton.c         最小可编译 PCIe 驱动骨架（含注释，已过专家审核）
     ├── Makefile               树外编译（推荐）+ 树内编译说明
     ├── Kconfig                仅树内编译时用
-    └── userspace_test.c       用户态测试程序（含 0xA5 闭环校验）
+    ├── userspace_test.c       用户态测试程序（含 0xA5 闭环校验）
+    └── devcases/              dev_case 编译脚手架（Makefile + extract.sh + preflight.sh）
 ```
 
-> 学习顺序建议：**读 00+01 → 读 02 对照代码 → 做 lab_01（跑通"读到真 BAR"）→ 无硬件时做 lab_02（QEMU）→ 读 03+04+06 → 用 05 自测**。
-> 卡住时先看 troubleshooting.md，再上网搜。
+> **完整学习顺序**：**读 00+01 → 读 02 对照代码 → 做 lab_01（跑通"读到真 BAR"）→ 无硬件时做 lab_02（QEMU）或 lab_04（VFIO，最安全）→ 读 03+04+06 → 学 07-13 多卡通讯技术栈 → 要做集群驱动开发则学「多卡集群驱动开发技能地图」+ dev_case_01~04 → 用 05 自测（37 题）**。
+> **遇到具体故障时**：先查 16（AER 日志）、再查 15（P2P 不可用）、算带宽前查 17、读配置空间查 14。
+> **动手写内核代码前**：先跑 `code/devcases/preflight.sh`（只读自检，打印你的内核该用哪套 API + P2P 预判），再查 18 确认 API 签名与版本区间。
+> 卡住时先看 troubleshooting.md，再上网搜；查概念用术语速查表；集群 IO 问题查集群高速IO问题排查；拿到新卡查硬件bring-up清单。
 
 ## 前置与环境
 

@@ -77,8 +77,8 @@ cat /proc/interrupts | grep pci_skel   # 看中断计数是否增长
 
 1. **纯编译加载**（最基础）：`make` 通过 + `insmod`/`rmmod` 不报错 + dmesg 干净。这已经验证了你的构建环境和模块框架没问题。
 2. **Lab 01（推荐）**：拿现成 NVMe/网卡，精简 probe 到 5 步，跑到"读到真硬件 BAR0"。
-3. **用户态摸 BAR（最安全）**：用 `vfio-pci` 把一块现成网卡绑给用户态，写用户态程序 `mmap` BAR、`readl/writel`，不写内核模块、不怕 panic。整包不强制此路线，想深入 IOMMU/用户态驱动再学。
-4. **完整闭环（Lab 03）**：需要自定义 FPGA 卡或自建 QEMU 教学设备（实现 BAR0 寄存器 + 拉高 STATUS bit0 触发 MSI-X）。
+3. **用户态摸 BAR（最安全）**：用 `vfio-pci` 把一块现成网卡绑给用户态，写用户态程序 `mmap` BAR、`readl/writel`，不写内核模块、不怕 panic。完整步骤见 [[lab_04_vfio_userspace]]。
+4. **完整闭环（DMA + 中断）**：需要自定义 FPGA 卡或自建 QEMU 教学设备（实现 BAR0 寄存器 + 拉高 STATUS bit0 触发 MSI-X），见 [[lab_02_qemu]] 的"玩法 C"。
 
 > 心法：**别指望一口气跑通全闭环**。先把"编译→加载→读到真 BAR"这条最短链跑通，建立信心，再逐段加中断、DMA。
 

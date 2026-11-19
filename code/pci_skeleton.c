@@ -110,7 +110,10 @@ static ssize_t skel_read(struct file *f, char __user *ubuf,
 	if (mutex_lock_interruptible(&d->lock))
 		return -ERESTARTSYS;
 
-	/* 触发一次 DMA：把设备可访问的总线地址写进寄存器，64 位地址 HI/LO 都要写 */
+	/* 触发一次 DMA：把设备可访问的总线地址写进寄存器，64 位地址 HI/LO 都要写
+	 * 注意：先 reinit_completion，清掉上一次（或迟到中断）遗留的完成量，
+	 * 否则本次可能"立刻返回"并读到上一轮的旧数据。 */
+	reinit_completion(&d->dma_done);
 	writel(lower_32_bits(d->dma_handle), d->regs + REG_DMA_ADDR_LO);
 	writel(upper_32_bits(d->dma_handle), d->regs + REG_DMA_ADDR_HI);
 	writel(d->dma_size, d->regs + REG_DMA_LEN);
@@ -272,9 +275,11 @@ static const struct pci_device_id skel_ids[] = {
 MODULE_DEVICE_TABLE(pci, skel_ids);
 
 /* 现代写法：用 dev_pm_ops（SIMPLE_DEV_PM_OPS），而非已废弃的 .suspend/.resume。
- * suspend 里 pci_save_state → pci_disable_device 顺序正确：disable 会清内部保存的
- * state buffer，所以必须先 save。注意本骨架 resume 仅恢复到"能访问"状态，
- * 未重做 request_irq / misc_register；生产驱动如需完整还原应参照 probe 的 6.4-6.9。 */
+ * 顺序要点：先 pci_save_state 再 pci_disable_device——save 保存的是"设备仍在
+ * 正常工作时"的配置空间；若反过来，disable 会清 Bus Master、可能改动 Command
+ * 寄存器，保存下来的就不是进入 D3 前的预期状态。
+ * 注意本骨架 resume 仅恢复到"能访问"状态，未重做 request_irq / misc_register；
+ * 生产驱动如需完整还原应参照 probe 的 6.4-6.9。 */
 #ifdef CONFIG_PM
 static int skel_suspend(struct device *dev)
 {

@@ -46,9 +46,10 @@ PCIe = **基于报文（packet）的、点对点的、交换式（switched）串
 | PCIe 3.0 | 8 GT/s | 128b/130b | ~16 GB/s |
 | PCIe 4.0 | 16 GT/s | 128b/130b | ~32 GB/s |
 | PCIe 5.0 | 32 GT/s | 128b/130b | ~64 GB/s |
-| PCIe 6.0 | 64 GT/s | PAM4 + FLIT | ~128 GB/s |
+| PCIe 6.0 | 64 GT/s | PAM4 + FLIT | ~121 GB/s |
 
 > 记住：**x16 Gen4 ≈ 32 GB/s 单向**，这个量级帮你判断"数据到底走不走得完"。
+> Gen6 的 121 与 128 别混：**128 是裸速率**（64 Gb/s × 16 ÷ 8），**121 是扣掉 FLIT 开销后的有效值**（× 242/256）。表格统一用有效值，精确推导见 [[17_带宽与单位换算速查]]。
 
 ## 4. 报文（TLP）——数据怎么走
 
@@ -63,6 +64,28 @@ PCIe 上所有东西都是 **TLP（Transaction Layer Packet）**：
 **关键流程**（记住这个"内存读写"模型）：
 - 设备写主存：EP 发 **Memory Write TLP** → 经 Switch → RC → 写入 DRAM。** Posted，无需回应。
 - 设备读主存：EP 发 **Memory Read TLP** → RC 读 DRAM → 回 **Completion TLP** 带数据。** Non-Posted，要等回应。
+
+> 图示：两条路径一图对比。写路径（Posted）发完即完成，不等回应；读路径（Non-Posted）必须等 Completion 返回，这就是"写快读慢"的结构性原因。
+
+```mermaid
+sequenceDiagram
+    participant EP as EP 设备
+    participant SW as Switch
+    participant RC as RC
+    participant DRAM as 主存 DRAM
+
+    Note over EP,DRAM: 写路径 · Memory Write（Posted：无需回应，发完即完成）
+    EP->>SW: Memory Write TLP "把数据写到地址 A"
+    SW->>RC: 按地址路由转发
+    RC->>DRAM: 写入地址 A
+    Note over EP: EP 不会等待任何回应
+
+    Note over EP,DRAM: 读路径 · Memory Read（Non-Posted：必须等 Completion）
+    EP->>SW: Memory Read TLP "地址 A 的数据给我"
+    SW->>RC: 转发
+    RC->>DRAM: 读地址 A
+    RC-->>EP: Completion TLP（带数据）← 去程 + 回程，延迟翻倍
+```
 
 > Posted / Non-Posted 是排序与流控的基础，也解释了"写快读慢"。
 

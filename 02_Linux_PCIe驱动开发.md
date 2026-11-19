@@ -152,6 +152,7 @@ NVMe、网卡、GPU 全是这套。学一个，处处能用。
 | 单 completion / 单 buffer 多进程并发 | 一次唤醒丢失、另一进程永久阻塞 / 数据交叉损坏 | 用 mutex 把"触发→等待→拷贝"整段串行化 |
 | 64 位 DMA 地址只写低 32 位 | 高地址（>4G）截断 → IOMMU fault / 写错地址 | 拆 ADDR_HI/ADDR_LO，HI/LO 都要写 |
 | misc 用固定名做多卡 | 第二张卡 `misc_register` 返回 `-EEXIST` | 用 `pci_skel+devfn` 之类生成唯一名 |
+| completion 未 `reinit_completion` 就复用 | 偶发"本次 read 立刻返回上一轮旧数据"（迟到/多余中断留下的完成量） | 每次触发 DMA 前 `reinit_completion()` |
 
 ## 9. 学习捷径：读真实驱动
 

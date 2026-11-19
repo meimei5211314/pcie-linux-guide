@@ -61,9 +61,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 工作目录：把学习包挂载/拷进这里
 WORKDIR /work
 
-# 把学习包代码拷进镜像（也可用 -v 挂载，见下）
-COPY code/ /work/code/
-COPY lab_02_qemu.md /work/
+# 不在镜像里 COPY 代码：构建上下文是 docker/ 本身，
+# 代码通过 docker run -v 挂载进 /work，改完即时生效。
+# （若你确实想 COPY 代码进镜像，必须把构建上下文改成仓库根目录：
+#    docker build -t pcie-lab -f docker/Dockerfile .  ）
 
 # 默认进入交互 shell
 CMD ["/bin/bash"]

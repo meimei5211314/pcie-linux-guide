@@ -47,10 +47,23 @@ NCCL INFO Protocol    : Simple
 
 ### 算法/协议强制指定（调优用）
 ```bash
-export NCCL_ALGO=Ring          # 强制 Ring（Ring/Tree/CollNet）
-export NCCL_PROTO=Simple       # 协议（Simple/LL/LL128）
-export NCCL_NCHANNELS=8        # 通道数
+export NCCL_ALGO=Ring          # 可选值见下表
+export NCCL_PROTO=Simple       # Simple / LL / LL128
+export NCCL_NCHANNELS=8        # 通道数（下限、上限另有 NCCL_MIN_NCHANNELS / NCCL_MAX_NCHANNELS）
 ```
+
+`NCCL_ALGO` 的**真实可选值**（逗号分隔表示按优先级尝试）：
+
+| 值 | 含义 | 适用 |
+|----|------|------|
+| `Ring` | 环形 | 大消息、带宽优先 |
+| `Tree` | 树形 | 小消息、延迟优先 |
+| `CollNetChain` / `CollNetDirect` | 交换机内归约（SHARP） | IB + 支持 SHARP 的交换机 |
+| `NVLS` / `NVLSTree` | NVLink SHARP（NVSwitch 内归约） | Hopper 及以上的 NVLink 域 |
+| `PAT` | 通信-计算重叠的分块算法 | 部分版本/场景 |
+
+> **不要迷信"小数据强制 Tree、大数据强制 Ring"**：现代 NCCL 由内部 tuner 按拓扑、消息大小、channel 数综合决策，手工强制往往更慢。**先跑 nccl-tests 建立基线，再单变量对比**，这是唯一可靠的判断方式。
+> 另外，NCCL 只是众多开关中的一个：`NCCL_PROTO` 与算法是正交的；`NVLS` 需要驱动/固件与 NVSwitch 支持。
 
 ### 逐项禁用（定位故障）
 ```bash
@@ -87,20 +100,36 @@ make MPI=1  # 有 MPI 用 MPI=1，纯单机可不加
 ```
 
 ### 读输出（关键指标）
+
 ```
-                      out-of-place              in-place
+                      out-of-place                    in-place
        size    count    type  redop   time  algbw  busbw  ...
-       64M  16777216  float    sum  0.95   67.4  235.9  ...  ← 看 busbw
-                                ↑       ↑      ↑
-                              时间   算法带宽  总线带宽
+       64M  16777216  float    sum   1.15  233.4  350.1  ...  ← 看 busbw
+```
+
+上表是**按公式算出的示例**（4 卡、64M float = 268.4 MB、耗时 1.15 ms），不是实测值：
+
+```
+algbw = size / time            = 268.4 MB / 1.15 ms ≈ 233 GB/s
+busbw = algbw × 2(N-1)/N       = 233 × 2×3/4     ≈ 350 GB/s   （N=4）
 ```
 
 | 指标 | 含义 | 怎么用 |
 |------|------|--------|
-| **algbw** | 算法带宽 = size / time | 单卡视角的吞吐 |
-| **busbw** | 总线带宽 = algbw × 2(N-1)/N | **和硬件理论带宽对比** |
+| **algbw** | 算法带宽 = size / time | 单卡视角的吞吐，**不能**直接和硬件峰值比 |
+| **busbw** | 总线带宽 = algbw × 2(N-1)/N（AllReduce） | **和硬件单向带宽对比**，这才是有效指标 |
 
-> **判读**：4 卡 NVLink 理论 ~900 GB/s，实测 busbw 接近 600-700 GB/s 为正常；如果只有 100 GB/s，说明走的是 PCIe 而不是 NVLink。
+**典型 busbw 区间（量级参考，非承诺值）**：
+
+| 拓扑 | busbw 典型区间 |
+|------|---------------|
+| 8×A100 NVLink3 | 200–240 GB/s |
+| 8×H100 NVLink4 | 350–450 GB/s |
+| 2 卡同 Switch，PCIe Gen4 x16 | 20–24 GB/s |
+| 跨机 100G IB 单端口 | ≈11 GB/s |
+
+> **判读要点**：NVLink 的 600/900 GB/s 是**双向合计**，因此单卡 busbw 的理论上限只有其一半（A100 ≈300、H100 ≈450 GB/s）。实测落在区间内属正常；若只有 ~25 GB/s，基本可以判定走的是单条 PCIe Gen4 x16 而非 NVLink。
+> 各集合操作的 busbw 归一化系数不同（AllGather/ReduceScatter 为 (N-1)/N，Broadcast 为 1），见 [[17_带宽与单位换算速查]]。
 
 ---
 
@@ -110,6 +139,7 @@ make MPI=1  # 有 MPI 用 MPI=1，纯单机可不加
 #include <nccl.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define NDEV 2
 #define SIZE (1024*1024)
@@ -121,18 +151,23 @@ int main() {
     // 1. 初始化（每个设备一个 communicator）
     ncclCommInitAll(comms, NDEV, devs);
 
-    // 2. 每卡分配数据
+    // 2. 每卡分配数据（用 host 端初始化后拷入，避免 cudaMemset 按字节填充的坑）
     float *sendbuff[NDEV], *recvbuff[NDEV];
     cudaStream_t streams[NDEV];
+    float *host = (float *)malloc(SIZE * sizeof(float));
+
     for (int i = 0; i < NDEV; i++) {
         cudaSetDevice(devs[i]);
         cudaMalloc(&sendbuff[i], SIZE * sizeof(float));
         cudaMalloc(&recvbuff[i], SIZE * sizeof(float));
         cudaStreamCreate(&streams[i]);
-        // 初始化 sendbuff[i] = i+1
-        float val = i + 1;
-        cudaMemset(sendbuff[i], 0, SIZE * sizeof(float));  // 简化
+
+        for (int j = 0; j < SIZE; j++)
+            host[j] = (float)(i + 1);          /* 每卡全填 i+1 */
+        cudaMemcpy(sendbuff[i], host, SIZE * sizeof(float),
+                   cudaMemcpyHostToDevice);
     }
+    free(host);
 
     // 3. AllReduce（异步，提交到 stream）
     for (int i = 0; i < NDEV; i++) {
@@ -145,10 +180,23 @@ int main() {
         cudaStreamSynchronize(streams[i]);
     }
 
-    printf("AllReduce done\n");
+    // 5. 验证：NDEV 张卡各贡献 (i+1)，求和应为 1+2+...+NDEV
+    for (int i = 0; i < NDEV; i++) {
+        float out = 0.0f;
+        cudaSetDevice(devs[i]);
+        cudaMemcpy(&out, recvbuff[i], sizeof(float), cudaMemcpyDeviceToHost);
+        printf("rank %d: recvbuff[0] = %.1f (期望 %d)\n",
+               i, out, NDEV * (NDEV + 1) / 2);
+    }
 
-    // 5. 清理
-    for (int i = 0; i < NDEV; i++) ncclCommDestroy(comms[i]);
+    // 6. 清理
+    for (int i = 0; i < NDEV; i++) {
+        cudaSetDevice(devs[i]);
+        cudaFree(sendbuff[i]);
+        cudaFree(recvbuff[i]);
+        cudaStreamDestroy(streams[i]);
+        ncclCommDestroy(comms[i]);
+    }
     return 0;
 }
 ```
@@ -199,6 +247,7 @@ work.wait()  # 等通讯完成
 | 卡死 / timeout | 集合操作顺序不一致 / 某 rank 没参与 | `NCCL_DEBUG=INFO` 看卡在哪个操作 |
 | 带宽远低于预期 | 走了 PCIe 没走 NVLink / 拓扑识别错 | `nvidia-smi topo -m`；看 NCCL INFO 走的通道 |
 | `out of memory` | 显存不够（NCCL 占显存） | 减小 batch / 减少卡上并发 |
+| `ibv_reg_mr` 返回 `Bad address` (EFAULT) | GPU 显存没被网卡成功注册，GPUDirect 未走通 | 走 dma-buf：确认 `nvidia_drm modeset=1` 且 `NCCL_DMABUF_ENABLE=1`；或在 OFED 环境下加载 peer-mem 模块（见 [[11_GPUDirect与RDMA]]） |
 
 ### 卡死（Hang）专项排查
 ```bash
@@ -206,8 +255,11 @@ work.wait()  # 等通讯完成
 export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=INIT,COLL
 
-# 2. 加超时（默认很长）
-export NCCL_TIMEOUT=60  # 秒
+# 2. 用真实的超时开关（注意：不存在 NCCL_TIMEOUT 这个环境变量）
+#    PyTorch 侧：init_process_group(timeout=timedelta(minutes=10))
+#    watchdog：export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=600
+#    IB 传输层超时：export NCCL_IB_TIMEOUT=22   （指数退避计数，非秒）
+#    nccl-tests 自带：./all_reduce_perf ... -T 60
 
 # 3. 用 gdb / cuda-gdb attach 看卡在哪
 ```
